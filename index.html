@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <!-- 京 -->
+  <title>BodyPix</title>
+  <meta charset="UTF-8">
+  <!-- Load TensorFlow.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.2"></script>
+  <!-- Load BodyPix -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.0"></script>
+
+  <!-- Copyright 2020 NOKUBI Takatsugu -->
+  <!-- This code is licensed under MIT, see ../LICENSE -->
+
+</head>
+
+<body>
+    <video id="video" width="640" height="480"></video>
+    <div>
+        <button id="start_video" onclick="startVideoAnimation()">Start video</button>
+        <button id="stop_video" onclick="stopVideo()">Stop video</button>
+    </div>
+    <canvas id="canvas"></canvas>
+    <!-- <img src="image.jpg" id="image"> -->
+    <div id="dropArea">
+        <div>drop here your image file</div>
+        <img src="spider-web-2083087_960_720.jpg" id="bg">
+    </div>
+    <div>
+    <ul>
+        <li>
+            <a href="https://qiita.com/knok/items/b3eb87769151ac04efeb">任意のバーチャル背景を使えるページを作った(Qiita article)</a>
+        </li>
+        <li>
+            <a href="http://blog.daionet.gr.jp/knok-e/2020/05/10/virtual-background-using-webcam/">Virtual Background using webcam (English article)</a>
+        </li>
+    </ul>
+    </div>
+    <script>
+        let localStream = null;
+        let localVideo = document.getElementById('video');
+        let net = null;
+        let continueAnimation = false;
+        let animationId = null;
+        let area = document.getElementById('dropArea');
+        area.addEventListener('dragover', function(ev) {
+            ev.preventDefault();
+            area.classList.add('dragover');
+        });
+        area.addEventListener('dragleave', function(ev) {
+            ev.preventDefault();
+            area.classList.remove('dragover');
+        });
+        area.addEventListener('drop', function(ev) {
+            ev.preventDefault();
+            area.classList.remove('dragenter');
+            var files = ev.dataTransfer.files;
+            console.log('dnd');
+            photoPreview('onChange', files[0]);
+        });
+        function photoPreview(event, f = null) {
+            var file = f;
+            if (file == null) {
+                file = event.target.files[0];
+            }
+            var reader = new FileReader();
+            var preview = document.getElementById('dropArea');
+            var previewImage = document.getElementById('bg');
+            if (previewImage != null) {
+                preview.removeChild(previewImage);
+            }
+            reader.onload = function(event) {
+                var img = document.createElement('img');
+                img.setAttribute("src", reader.result);
+                img.setAttribute("id", "bg");
+                preview.appendChild(img);
+            };
+            reader.readAsDataURL(file);
+        }
+        async function loadModel() {
+            net = await bodyPix.load({
+                architecture: 'MobileNetV1',
+                outputStride: 16,
+                multiplier: 0.50,
+                quantBytes: 2,
+            });
+        }
+
+        async function getImages() {
+            const img = await document.getElementById('video');
+            const bg = document.getElementById('bg')
+            const cv_img = document.createElement('canvas');
+            const cv_bg = document.createElement('canvas');
+            cv_img.width = img.width;
+            cv_img.height = img.height;
+            const ctx_img = cv_img.getContext('2d');
+            ctx_img.drawImage(img, 0, 0);
+            cv_bg.width = img.width;
+            cv_bg.height = img.height;
+            const ctx_bg = cv_bg.getContext('2d');
+            ctx_bg.drawImage(bg, 0, 0, bg.width, bg.height, 0, 0, img.width, img.height);
+            const data_img = ctx_img.getImageData(0, 0, img.width, img.height);
+            const data_bg = ctx_bg.getImageData(0, 0, img.width, img.height);
+            return [img, bg, cv_img, cv_bg, ctx_img, ctx_bg, data_img, data_bg];
+        }
+
+        function drawToCanvas(canvas, segmentation, img, data_img, data_bg) {
+            const ctx = canvas.getContext("2d");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            let width = img.width;
+            let height = img.height;
+            let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            let pixels = imageData.data;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let base = (y * width + x) * 4;
+                    let segbase = y * width + x;
+                    if (segmentation.data[segbase] == 1) { // is fg
+                        pixels[base + 0] = data_img.data[base + 0];
+                        pixels[base + 1] = data_img.data[base + 1];
+                        pixels[base + 2] = data_img.data[base + 2];
+                        pixels[base + 3] = data_img.data[base + 3];
+                    } else {
+                        pixels[base + 0] = data_bg.data[base + 0];
+                        pixels[base + 1] = data_bg.data[base + 1];
+                        pixels[base + 2] = data_bg.data[base + 2];
+                        pixels[base + 3] = data_bg.data[base + 3];
+                    }
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+        async function startVideoAnimation() {
+            await startVideo();
+            continueAnimation = true;
+            animationId = window.requestAnimationFrame(updateCanvas);
+
+        }
+        async function startPredict() {
+            await startVideo();
+            let [img, bg, cv_img, cv_bg, ctx_img, ctx_bg, data_img, data_bg] = await getImages();
+
+            const segmentation = await net.segmentPerson(img);
+            
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext("2d");
+            drawToCanvas(canvas, segmentation, img, data_img, data_bg);
+        };
+        loadModel();
+
+        async function updateCanvas() {
+            let [img, bg, cv_img, cv_bg, ctx_img, ctx_bg, data_img, data_bg] = await getImages();
+            const segmentation = await net.segmentPerson(img);
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext("2d");
+            drawToCanvas(canvas, segmentation, img, data_img, data_bg);
+            if (continueAnimation) {
+                animationId = window.requestAnimationFrame(updateCanvas);
+            }
+        }
+
+        function stopVideo() {
+            continueAnimation = false;
+            localVideo.pause();
+            localVideo.srcObject = null;
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    console.log('stop track:', track);
+                    track.stop();
+                });
+                localStream = null;
+            }
+        }
+
+        async function startVideo() {
+            const mediaConst = { video: { width: 640, height: 480}, audio: false };
+            localStream = await navigator.mediaDevices.getUserMedia(mediaConst).catch(err => {
+                console.error('media error:', err);
+                return;
+            });
+            localVideo.srcObject = localStream;
+            await localVideo.play().catch(err => console.error('local play error:', err))
+        }
+    </script>
+</body>
+</html>
